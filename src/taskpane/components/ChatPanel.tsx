@@ -3,7 +3,7 @@ import { AppSettings } from "../../store/settings";
 import { ChatMessage, ContentPart, streamChat, listModels } from "../../ai/client";
 import { getPreset } from "../../ai/providers";
 import { stripReasoning, markdownToPlain } from "../../ai/format";
-import { livePlainText } from "../../ai/live";
+import { liveDeliverable } from "../../ai/live";
 import { parseActions } from "../../ai/actions";
 import { splitResponse } from "../../ai/content";
 import { getSelectedText, getBodyText, insertRich } from "../../word/doc";
@@ -159,9 +159,10 @@ export default function ChatPanel({ settings, onChange }: Props) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    const writer = liveWrite ? new LiveWriter(!useSelection) : null;
+    // Escritor en vivo: se crea de forma perezosa y SOLO si aparece un
+    // entregable (bloque de contenido). La conversacion normal no se escribe.
+    const wref: { current: LiveWriter | null } = { current: null };
     let writtenLen = 0;
-    if (writer) writer.start();
 
     let acc = "";
     try {
@@ -176,17 +177,23 @@ export default function ChatPanel({ settings, onChange }: Props) {
             copy[copy.length - 1] = { role: "assistant", content: clean };
             return copy;
           });
-          if (writer) {
-            const full = livePlainText(acc);
-            if (full.length > writtenLen && full.startsWith(full.slice(0, writtenLen))) {
-              writer.push(full.slice(writtenLen));
-              writtenLen = full.length;
+          if (liveWrite) {
+            const deliver = liveDeliverable(acc);
+            if (deliver) {
+              if (!wref.current) { wref.current = new LiveWriter(!useSelection); wref.current.start(); }
+              if (deliver.length > writtenLen && deliver.startsWith(deliver.slice(0, writtenLen))) {
+                wref.current.push(deliver.slice(writtenLen));
+                writtenLen = deliver.length;
+              }
             }
           }
         },
         ctrl.signal
       );
-      if (writer) await writer.finish();
+      if (wref.current) {
+        const { content: fc } = splitResponse(parseActions(stripReasoning(acc)).text);
+        await wref.current.finish(fc || undefined);
+      }
       const { actions } = parseActions(stripReasoning(acc));
       if (actions.length) {
         try {
@@ -200,7 +207,7 @@ export default function ChatPanel({ settings, onChange }: Props) {
         }
       }
     } catch (e: any) {
-      if (writer) await writer.finish();
+      if (wref.current) await wref.current.finish();
       if (e?.name !== "AbortError") setError(e?.message ?? String(e));
     } finally {
       setBusy(false);
@@ -388,3 +395,6 @@ export default function ChatPanel({ settings, onChange }: Props) {
     </div>
   );
 }
+
+
+

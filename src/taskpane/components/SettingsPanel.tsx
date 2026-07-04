@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { AppSettings } from "../../store/settings";
 import { PROVIDER_PRESETS, getPreset } from "../../ai/providers";
 import { listModelsDetailed, chat } from "../../ai/client";
+import { SYSTEM_PROMPT } from "../../ai/systemprompt";
 
 interface Props {
   settings: AppSettings;
@@ -166,12 +167,13 @@ export default function SettingsPanel({ settings, onChange }: Props) {
       </label>
 
       <label className="field">
-        <span>System prompt</span>
+        <span>System prompt (define como escribe y da formato la IA)</span>
         <textarea
           rows={5}
           value={settings.systemPrompt}
           onChange={(e) => onChange({ ...settings, systemPrompt: e.target.value })}
         />
+        <button type="button" className="link-btn" onClick={() => onChange({ ...settings, systemPrompt: SYSTEM_PROMPT })}>Restaurar prompt por defecto</button>
       </label>
 
       {testResult && <div className="test-result">{testResult}</div>}
@@ -183,3 +185,4 @@ export default function SettingsPanel({ settings, onChange }: Props) {
     </div>
   );
 }
+

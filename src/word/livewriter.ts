@@ -1,10 +1,12 @@
-// Escritor incremental: teclea texto en el documento en tiempo real, como un
-// agente. Mantiene un rango-cursor y va insertando los deltas segun llegan.
-// Escribe TEXTO PLANO durante el stream (el formato rico mid-stream seria
-// inestable); el usuario puede reformatear despues si quiere.
+import { toWordHtml } from "../ai/richtext";
+
+// Escritor incremental estilo agente. Durante el stream teclea TEXTO PLANO en
+// la hoja (efecto en vivo). Al finalizar, reemplaza SOLO lo que el mismo
+// escribio por la version con FORMATO REAL (HTML -> formato nativo de Word).
 //
-// Para no saturar Word con un sync por token, acumula deltas y los descarga
-// en lotes cada ~250 ms.
+// Acota lo escrito con dos marcadores (inicio y fin) para no tocar NUNCA el
+// resto del documento. Cada lote se inserta justo en el marcador de fin y lo
+// reposiciona, asi el texto crece de forma contigua sin saltar al final del doc.
 
 export class LiveWriter {
   private queue = "";
@@ -12,63 +14,114 @@ export class LiveWriter {
   private started = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly atEnd: boolean;
+  private readonly bmStart = "__ai_live_start__";
+  private readonly bmEnd = "__ai_live_end__";
 
-  // atEnd=true escribe al final del documento; si no, reemplaza la seleccion
-  // actual y sigue escribiendo desde ahi.
   constructor(atEnd = true) {
     this.atEnd = atEnd;
   }
 
-  // Encola un fragmento de texto para escribir.
   push(delta: string) {
     if (delta) this.queue += delta;
   }
 
-  // Arranca el bucle de escritura por lotes.
   start() {
     if (this.timer) return;
-    this.timer = setInterval(() => void this.flush(), 250);
+    this.timer = setInterval(() => void this.flush(), 220);
   }
 
-  // Descarga lo que quede y detiene el bucle.
-  async finish() {
+  private async flush() {
+    if (this.flushing || !this.queue) return;
+    this.flushing = true;
+    const chunk = this.queue;
+    this.queue = "";
+    try {
+      await Word.run(async (context) => {
+        const doc = context.document;
+
+        if (!this.started) {
+          // Primer lote: fija el punto de insercion (fin del doc o seleccion).
+          const range = this.atEnd
+            ? doc.body.getRange(Word.RangeLocation.end)
+            : doc.getSelection();
+          if (!this.atEnd) range.clear();
+          const written = range.insertText(chunk, Word.InsertLocation.replace);
+          // Marca inicio (al comienzo) y fin (al final) de lo escrito.
+          written.getRange(Word.RangeLocation.start).insertBookmark(this.bmStart);
+          written.getRange(Word.RangeLocation.end).insertBookmark(this.bmEnd);
+          this.started = true;
+        } else {
+          // Lotes siguientes: insertar EN el marcador de fin y reposicionarlo,
+          // para crecer de forma contigua sin tocar el resto del documento.
+          const endBm = doc.getBookmarkRangeOrNullObject(this.bmEnd);
+          endBm.load("isNullObject");
+          await context.sync();
+          const anchor = endBm.isNullObject
+            ? doc.body.getRange(Word.RangeLocation.end)
+            : endBm;
+          const written = anchor.insertText(chunk, Word.InsertLocation.end);
+          written.getRange(Word.RangeLocation.end).insertBookmark(this.bmEnd);
+        }
+        await context.sync();
+      });
+    } catch {
+      this.queue = chunk + this.queue;
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  // Termina el tecleo. Si se pasa `finalContent`, reemplaza SOLO el rango
+  // escrito (entre los dos marcadores) por su version con formato real.
+  async finish(finalContent?: string) {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     await this.flush();
-  }
 
-  private async flush() {
-    if (this.flushing) return;
-    if (!this.queue) return;
-    this.flushing = true;
-    const chunk = this.queue;
-    this.queue = "";
+    const cleanup = async () => {
+      try {
+        await Word.run(async (context) => {
+          const doc = context.document;
+          const a = doc.getBookmarkRangeOrNullObject(this.bmStart);
+          const b = doc.getBookmarkRangeOrNullObject(this.bmEnd);
+          a.load("isNullObject");
+          b.load("isNullObject");
+          await context.sync();
+          if (!a.isNullObject) doc.deleteBookmark(this.bmStart);
+          if (!b.isNullObject) doc.deleteBookmark(this.bmEnd);
+          await context.sync();
+        });
+      } catch {
+        /* noop */
+      }
+    };
 
+    if (!finalContent || !this.started) {
+      await cleanup();
+      return;
+    }
+
+    const html = toWordHtml(finalContent);
     try {
       await Word.run(async (context) => {
         const doc = context.document;
-        if (!this.started) {
-          // Primer lote: fija el punto de insercion.
-          if (this.atEnd) {
-            doc.body.insertText(chunk, Word.InsertLocation.end);
-          } else {
-            const sel = doc.getSelection();
-            sel.insertText(chunk, Word.InsertLocation.replace);
-          }
-          this.started = true;
-        } else {
-          // Lotes siguientes: siempre al final del cuerpo (el cursor avanza).
-          doc.body.insertText(chunk, Word.InsertLocation.end);
-        }
+        const startRange = doc.getBookmarkRangeOrNullObject(this.bmStart);
+        const endRange = doc.getBookmarkRangeOrNullObject(this.bmEnd);
+        startRange.load("isNullObject");
+        endRange.load("isNullObject");
+        await context.sync();
+        if (startRange.isNullObject || endRange.isNullObject) return;
+
+        // Rango acotado SOLO a lo que escribimos (inicio -> fin).
+        const full = startRange.expandTo(endRange);
+        full.insertHtml(html, Word.InsertLocation.replace);
         await context.sync();
       });
     } catch {
-      // Si un lote falla, devuelve el texto a la cola para reintentar.
-      this.queue = chunk + this.queue;
-    } finally {
-      this.flushing = false;
+      // Si falla, se queda el texto plano ya tecleado (no destructivo).
     }
+    await cleanup();
   }
 }

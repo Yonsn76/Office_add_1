@@ -1,13 +1,14 @@
 // Separa la respuesta del modelo en dos partes:
-//  - comment: lo que el modelo DICE (comentarios, explicaciones). Solo se muestra.
-//  - content: el ENTREGABLE (texto/HTML corregido o redactado). Es lo unico que
-//    se inserta en el documento.
+//  - comment: lo que el modelo DICE (comentarios). Solo se muestra.
+//  - content: el ENTREGABLE (texto/HTML). Es lo unico que se inserta.
 //
-// Estrategia (en orden de preferencia):
-//  1) Bloque cercado ```html ... ``` (o cualquier bloque cercado no word-actions).
-//  2) Etiquetas explicitas [[CONTENIDO]] ... [[/CONTENIDO]].
-//  3) Heuristica: si la respuesta parece HTML/markdown estructurado (titulos,
-//     tags), se trata como contenido; si no, como comentario/conversacion.
+// Estrategia (en orden):
+//  1) Bloque cercado ```lang ... ``` (preferido: html).
+//  2) Bloque ABIERTO ```lang ... (sin cierre): pasa durante el streaming, para
+//     que el entregable se vaya mostrando token a token en lugar de aparecer
+//     todo de golpe al final.
+//  3) Etiquetas [[CONTENIDO]] ... [[/CONTENIDO]].
+//  4) Heuristica: si parece HTML/markdown estructurado, es contenido.
 
 export interface SplitResult {
   comment: string;
@@ -16,42 +17,51 @@ export interface SplitResult {
 }
 
 const FENCE_RE = /```[ \t]*([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*?)```/g;
+const OPEN_FENCE_RE = /```[ \t]*([a-zA-Z0-9_-]*)[ \t]*\r?\n([\s\S]*)$/;
 const TAG_RE = /\[\[\s*CONTENIDO\s*\]\]([\s\S]*?)\[\[\s*\/\s*CONTENIDO\s*\]\]/i;
 
 function looksStructured(text: string): boolean {
-  // Contiene tags HTML de bloque o varios encabezados markdown.
   if (/<\/?(p|div|h[1-6]|ul|ol|li|table|blockquote|strong|em|span)\b/i.test(text)) return true;
   const headings = (text.match(/^#{1,3}\s+/gm) || []).length;
   return headings >= 1;
 }
 
 export function splitResponse(raw: string): SplitResult {
-  // 1) Bloques cercados.
+  // Ignora el bloque de acciones al separar comentario/contenido.
+  const noActions = raw.replace(/```\s*word-actions[\s\S]*?```/gi, "");
+
+  // 1) Bloques cerrados.
   const blocks: { lang: string; body: string; start: number; end: number }[] = [];
   let m: RegExpExecArray | null;
   FENCE_RE.lastIndex = 0;
-  while ((m = FENCE_RE.exec(raw)) !== null) {
+  while ((m = FENCE_RE.exec(noActions)) !== null) {
     const lang = (m[1] || "").toLowerCase();
     if (lang === "word-actions") continue;
     blocks.push({ lang, body: m[2], start: m.index, end: m.index + m[0].length });
   }
   if (blocks.length > 0) {
     const chosen = blocks.find((b) => b.lang === "html") ?? blocks[0];
-    const comment = (raw.slice(0, chosen.start) + raw.slice(chosen.end)).trim();
+    const comment = (noActions.slice(0, chosen.start) + noActions.slice(chosen.end)).trim();
     return { comment, content: chosen.body.trim(), hasBlock: true };
   }
 
-  // 2) Etiquetas explicitas.
-  const tag = raw.match(TAG_RE);
+  // 2) Bloque abierto (streaming en curso): muestra el contenido parcial ya.
+  const open = noActions.match(OPEN_FENCE_RE);
+  if (open) {
+    const comment = noActions.slice(0, open.index).trim();
+    return { comment, content: open[2].trimStart(), hasBlock: true };
+  }
+
+  // 3) Etiquetas explicitas.
+  const tag = noActions.match(TAG_RE);
   if (tag) {
-    const comment = raw.replace(TAG_RE, "").trim();
+    const comment = noActions.replace(TAG_RE, "").trim();
     return { comment, content: tag[1].trim(), hasBlock: true };
   }
 
-  // 3) Heuristica.
-  if (looksStructured(raw)) {
-    return { comment: "", content: raw.trim(), hasBlock: false };
+  // 4) Heuristica.
+  if (looksStructured(noActions)) {
+    return { comment: "", content: noActions.trim(), hasBlock: false };
   }
-  // Texto corto conversacional: es comentario, no entregable.
-  return { comment: raw.trim(), content: "", hasBlock: false };
+  return { comment: noActions.trim(), content: "", hasBlock: false };
 }
