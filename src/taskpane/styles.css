@@ -433,3 +433,14 @@ input[type=range] { width: 100%; accent-color: var(--ink-strong); }
 .msg-images img { max-width: 140px; max-height: 140px; border-radius: 8px; border: 1px solid var(--border); display: block; }
 
 .composer-toggles { display: flex; flex-wrap: wrap; gap: 14px; }
+
+/* Preview identico a Word: titulos charcoal, tamanos en pt, h1 centrado */
+.rich-preview h1, .md-h1 { color: #2F3437 !important; font-family: var(--sans) !important; font-size: 20pt; font-weight: bold; text-align: center; letter-spacing: 0; margin: 0; }
+.rich-preview h2, .md-h2 { color: #2F3437 !important; font-family: var(--sans) !important; font-size: 16pt; font-weight: bold; letter-spacing: 0; margin: 0; }
+.rich-preview h3, .md-h3 { color: #2F3437 !important; font-family: var(--sans) !important; font-size: 13pt; font-weight: bold; letter-spacing: 0; margin: 0; }
+.rich-preview p, .md-p { text-indent: 0; margin: 0; }
+
+/* Boton de ajustes tipo engranaje */
+.tab-icon { border: none; background: transparent; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 6px; color: var(--muted); cursor: pointer; transition: color 160ms var(--ease), background 160ms var(--ease); }
+.tab-icon:hover { color: var(--ink); background: var(--bone); }
+.tab-icon.active { background: var(--bone); color: var(--ink-strong); }

@@ -1,13 +1,11 @@
 import { parseMarkdown, parseSpans } from "./format";
 
-// Detecta si el texto ya viene como HTML (la IA puede responder en HTML para
-// formato rico: color, tamano, sombreado, alineacion, etc.).
+// Detecta si el texto ya viene como HTML.
 export function looksLikeHtml(text: string): boolean {
   return /<\/?(p|div|span|h[1-6]|ul|ol|li|strong|b|em|i|u|mark|br|blockquote|table|tr|td|th|font)\b/i.test(text);
 }
 
-// Sanea HTML para la vista previa: quita scripts/estilos peligrosos y on*=...,
-// conserva estilo inline (color, tamano, fondo, alineacion).
+// Sanea HTML: quita scripts/estilos peligrosos y on*=..., conserva estilo inline.
 export function sanitizeHtml(html: string): string {
   let out = html;
   out = out.replace(/<\s*(script|style|iframe|object|embed|link|meta)[\s\S]*?<\/\s*\1\s*>/gi, "");
@@ -18,13 +16,9 @@ export function sanitizeHtml(html: string): string {
   return out;
 }
 
-// Alineacion por defecto de los parrafos del cuerpo. Justificado como pidio
-// el usuario. Los titulos y celdas conservan su alineacion natural salvo que
-// la IA especifique otra con style="text-align:...".
 const DEFAULT_ALIGN = "justify";
+const HEADING_COLOR = "#2F3437"; // charcoal, igual que el preview del chat
 
-// Asegura que un tag de parrafo tenga alineacion. Si ya trae text-align en su
-// style, se respeta; si no, se le inyecta el default justificado.
 function withDefaultAlign(openTag: string): string {
   if (/text-align\s*:/i.test(openTag)) return openTag;
   if (/style\s*=\s*"/i.test(openTag)) {
@@ -33,12 +27,51 @@ function withDefaultAlign(openTag: string): string {
   return openTag.replace(/<p\b/i, `<p style="text-align:${DEFAULT_ALIGN}"`);
 }
 
-// Aplica la alineacion por defecto a todos los <p> de un HTML que no la tengan.
 export function applyDefaultAlignment(html: string): string {
   return html.replace(/<p\b[^>]*>/gi, (tag) => withDefaultAlign(tag));
 }
 
-// Convierte markdown ligero a HTML. Los parrafos salen justificados por defecto.
+// Extrae el style inline existente de un tag de apertura (o cadena vacia).
+function extractStyle(attrs: string): string {
+  const m = attrs.match(/style\s*=\s*"([^"]*)"/i);
+  return m ? m[1] : "";
+}
+
+// Convierte <h1>-<h3> en <p> con formato EXPLICITO (tamano, negrita, color).
+// Asi Word NO aplica sus estilos de titulo integrados (que son azules por
+// defecto) y el resultado coincide con el preview del chat. Conserva la
+// alineacion/estilo que el modelo haya puesto (p. ej. text-align:center o un
+// color propio).
+function headingsToStyledP(html: string): string {
+  const sizes: Record<string, string> = { "1": "20pt", "2": "16pt", "3": "13pt" };
+  return html.replace(/<h([1-3])\b([^>]*)>([\s\S]*?)<\/h\1>/gi, (_full, lvl, attrs, inner) => {
+    const existing = extractStyle(attrs);
+    const hasColor = /color\s*:/i.test(existing);
+    const hasAlign = /text-align\s*:/i.test(existing);
+    const parts: string[] = [];
+    parts.push(`font-size:${sizes[lvl]}`);
+    parts.push("font-weight:bold");
+    if (!hasColor) parts.push(`color:${HEADING_COLOR}`);
+    if (!hasAlign && lvl === "1") parts.push("text-align:center");
+    parts.push("margin:0");
+    parts.push("text-indent:0");
+    // El style del modelo va primero (gana en color/alineacion si lo definio).
+    const merged = (existing ? existing.replace(/;?\s*$/, ";") : "") + parts.join(";");
+    return `<p style="${merged}">${inner}</p>`;
+  });
+}
+
+function resetParagraphInheritance(html: string): string {
+  const reset = "text-indent:0; margin:0;";
+  return html.replace(/<(p|li)\b([^>]*)>/gi, (_full, tag, attrs) => {
+    if (/text-indent\s*:/i.test(attrs) && /margin\s*:/i.test(attrs)) return `<${tag}${attrs}>`;
+    if (/style\s*=\s*"/i.test(attrs)) {
+      return `<${tag}${attrs.replace(/style\s*=\s*"/i, `style="${reset} `)}>`;
+    }
+    return `<${tag}${attrs} style="${reset}">`;
+  });
+}
+
 export function markdownToHtml(md: string): string {
   const esc = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -88,9 +121,9 @@ export function markdownToHtml(md: string): string {
   return html.join("");
 }
 
-// HTML final para insertar en Word (respuesta en HTML o markdown), con los
-// parrafos justificados por defecto salvo alineacion explicita de la IA.
+// HTML final para insertar en Word: alineacion por defecto, titulos con estilo
+// explicito (para no heredar el azul de Word) y reset de herencia de parrafo.
 export function toWordHtml(content: string): string {
   const html = looksLikeHtml(content) ? content : markdownToHtml(content);
-  return applyDefaultAlignment(sanitizeHtml(html));
+  return resetParagraphInheritance(headingsToStyledP(applyDefaultAlignment(sanitizeHtml(html))));
 }

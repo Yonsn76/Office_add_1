@@ -22,12 +22,30 @@ export async function getBodyText(): Promise<string> {
 
 type InsertWhere = "replace" | "after" | "before" | "end";
 
+// Quita la sangria de primera linea y el espaciado heredados del estilo del
+// documento en los parrafos de un rango, para que el resultado coincida con el
+// preview del chat (sin sangria fantasma ni espacio extra).
+async function normalizeParagraphs(context: Word.RequestContext, range: Word.Range) {
+  const paras = range.paragraphs;
+  paras.load("items");
+  await context.sync();
+  for (const p of paras.items) {
+    p.firstLineIndent = 0;
+    p.leftIndent = 0;
+    p.spaceBefore = 0;
+    p.spaceAfter = 6; // pequena separacion entre parrafos, como el chat
+  }
+  await context.sync();
+}
+
+// Inserta contenido enriquecido y normaliza los parrafos resultantes.
 export async function insertRich(content: string, where: InsertWhere = "replace"): Promise<void> {
   const html = toWordHtml(content);
   return Word.run(async (context) => {
     const doc = context.document;
+    let range: Word.Range;
     if (where === "end") {
-      doc.body.insertHtml(html, Word.InsertLocation.end);
+      range = doc.body.insertHtml(html, Word.InsertLocation.end);
     } else {
       const sel = doc.getSelection();
       const loc =
@@ -36,9 +54,10 @@ export async function insertRich(content: string, where: InsertWhere = "replace"
           : where === "after"
           ? Word.InsertLocation.after
           : Word.InsertLocation.before;
-      sel.insertHtml(html, loc);
+      range = sel.insertHtml(html, loc);
     }
     await context.sync();
+    await normalizeParagraphs(context, range);
   });
 }
 
@@ -60,8 +79,6 @@ export async function insertText(text: string, where: InsertWhere = "replace"): 
   });
 }
 
-// Inserta una imagen en el documento a partir de su base64 (sin el prefijo
-// data:...). widthPt opcional fija el ancho en puntos (manteniendo proporcion).
 export async function insertImageBase64(
   base64: string,
   where: InsertWhere = "end",
@@ -87,7 +104,6 @@ export async function insertImageBase64(
   });
 }
 
-// Lee un File de imagen y devuelve su base64 puro (sin el prefijo data URL).
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

@@ -61,9 +61,11 @@ export default function ChatPanel({ settings, onChange }: Props) {
   const [liveWrite, setLiveWrite] = useState(false);
   const [models, setModels] = useState<string[]>([]);
   const [pending, setPending] = useState<Attachment[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const active = settings.active;
   const preset = getPreset(active.presetId);
@@ -83,6 +85,15 @@ export default function ChatPanel({ settings, onChange }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active.baseUrl, active.apiKey, active.presetId]);
+
+  // Cierra el menu al hacer clic fuera.
+  useEffect(() => {
+    function onDoc(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, []);
 
   const options = Array.from(
     new Set([active.model, ...models, ...(preset?.sampleModels ?? [])].filter(Boolean))
@@ -159,8 +170,6 @@ export default function ChatPanel({ settings, onChange }: Props) {
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    // Escritor en vivo: se crea de forma perezosa y SOLO si aparece un
-    // entregable (bloque de contenido). La conversacion normal no se escribe.
     const wref: { current: LiveWriter | null } = { current: null };
     let writtenLen = 0;
 
@@ -216,6 +225,7 @@ export default function ChatPanel({ settings, onChange }: Props) {
   }
 
   async function quick(build: (t: string) => string) {
+    setMenuOpen(false);
     let text = "";
     try {
       text = await getSelectedText();
@@ -243,38 +253,20 @@ export default function ChatPanel({ settings, onChange }: Props) {
     }
   }
 
+  const canSend = (!!input.trim() || pending.length > 0) && !busy;
+
   return (
     <div className="chat">
-      <div className="chat-bar">
-        <label className="model-picker">
-          <span className="model-picker-label">Modelo</span>
-          <select value={active.model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
-            {options.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="quick-actions">
-        {QUICK_ACTIONS.map((a) => (
-          <button key={a.label} className="chip" disabled={busy} onClick={() => quick(a.build)}>
-            {a.label}
-          </button>
-        ))}
-      </div>
-
       <div className="messages" ref={scrollRef}>
         {messages.length === 0 && (
           <div className="hint">
-            Pide redactar, corregir o dar formato. Activa \"Escribir en la hoja\" para que el texto aparezca en el documento en tiempo real, como un agente.
+            Pide redactar, corregir o dar formato a tu documento. Usa el boton + para acciones rapidas.
           </div>
         )}
         {messages.map((m, i) => {
           if (m.role === "user") {
             return (
               <div key={i} className="bubble user" style={{ ["--index" as any]: Math.min(i, 6) }}>
-                <div className="bubble-role">Tu</div>
                 {m.images && m.images.length > 0 && (
                   <div className="msg-images">
                     {m.images.map((src, k) => (
@@ -322,18 +314,8 @@ export default function ChatPanel({ settings, onChange }: Props) {
       {notice && <div className="notice">{notice}</div>}
       {error && <div className="error">{error}</div>}
 
+      {/* Composer integrado estilo agente */}
       <div className="composer">
-        <div className="composer-toggles">
-          <label className="selection-toggle">
-            <input type="checkbox" checked={useSelection} onChange={(e) => setUseSelection(e.target.checked)} />
-            Usar seleccion como contexto
-          </label>
-          <label className="selection-toggle">
-            <input type="checkbox" checked={liveWrite} onChange={(e) => setLiveWrite(e.target.checked)} />
-            Escribir en la hoja en vivo
-          </label>
-        </div>
-
         {pending.length > 0 && (
           <div className="attachments">
             {pending.map((a, i) => (
@@ -345,28 +327,10 @@ export default function ChatPanel({ settings, onChange }: Props) {
           </div>
         )}
 
-        <div className="composer-input">
-          <button
-            className="clip-btn"
-            title="Adjuntar imagen"
-            disabled={busy}
-            onClick={() => fileRef.current?.click()}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-            </svg>
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
-            multiple
-            style={{ display: "none" }}
-            onChange={onPickFiles}
-          />
+        <div className="composer-box">
           <textarea
             value={input}
-            placeholder="Pide algo, o adjunta una imagen..."
+            placeholder="Pide algo a tu documento..."
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
@@ -374,27 +338,71 @@ export default function ChatPanel({ settings, onChange }: Props) {
                 run(input);
               }
             }}
-            rows={3}
+            rows={2}
           />
-        </div>
 
-        <div className="composer-row">
-          {busy ? (
-            <button className="btn danger" onClick={stop}>Detener</button>
-          ) : (
-            <button className="btn primary" onClick={() => run(input)} disabled={!input.trim() && pending.length === 0}>
-              Enviar
+          <div className="composer-toolbar">
+            {/* Menu + : acciones rapidas y adjuntar */}
+            <div className="menu-wrap" ref={menuRef}>
+              <button className="tool-btn" title="Acciones" disabled={busy} onClick={() => setMenuOpen((o) => !o)}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+              </button>
+              {menuOpen && (
+                <div className="menu">
+                  <button className="menu-item" onClick={() => { setMenuOpen(false); fileRef.current?.click(); }}>Adjuntar imagen</button>
+                  <div className="menu-sep" />
+                  {QUICK_ACTIONS.map((a) => (
+                    <button key={a.label} className="menu-item" onClick={() => quick(a.build)}>{a.label}</button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+              multiple
+              style={{ display: "none" }}
+              onChange={onPickFiles}
+            />
+
+            {/* Selector de modelo inline */}
+            <select className="model-inline" value={active.model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
+              {options.map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+
+            {/* Toggles como iconos-pastilla */}
+            <button
+              className={useSelection ? "toggle-pill on" : "toggle-pill"}
+              title="Usar seleccion como contexto"
+              onClick={() => setUseSelection((v) => !v)}
+            >
+              Sel
             </button>
-          )}
-          <button className="btn ghost" onClick={() => { setMessages([]); setNotice(null); setPending([]); }} disabled={busy || (messages.length === 0 && pending.length === 0)}>
-            Limpiar
-          </button>
-          <span className="kbd-hint"><kbd>Enter</kbd> enviar</span>
+            <button
+              className={liveWrite ? "toggle-pill on" : "toggle-pill"}
+              title="Escribir en la hoja en vivo"
+              onClick={() => setLiveWrite((v) => !v)}
+            >
+              Vivo
+            </button>
+
+            <div className="toolbar-spacer" />
+
+            {busy ? (
+              <button className="send-btn stop" onClick={stop} title="Detener">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+              </button>
+            ) : (
+              <button className="send-btn" onClick={() => run(input)} disabled={!canSend} title="Enviar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 11l5-5 5 5M12 6v13" /></svg>
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
-
-
-
